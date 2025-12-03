@@ -63,6 +63,7 @@ local Remotes = {
 local Config = {
     AutoRun = false,
     AutoMine = false,
+    SpinMining = false, -- New Config
     MineTargets = {},
     PriorityOre = "None",
     FightCloseMobs = false,
@@ -83,6 +84,23 @@ local TWEEN_SPEED = 65
 local LastLocationCFrame = nil 
 local ReturnButton = nil
 
+-- --- AVOIDANCE VARIABLES ---
+local GoblinCavePart = nil
+local CurrentTweenTrack = nil 
+
+task.spawn(function()
+    pcall(function()
+        GoblinCavePart = Workspace:WaitForChild("Assets", 10)
+            :WaitForChild("Debris", 10)
+            :WaitForChild("Regions", 10)
+            :WaitForChild("Goblin Cave", 10)
+    end)
+    if GoblinCavePart then
+        print("[The Forge] Goblin Cave region detected for avoidance.")
+    end
+end)
+-- ---------------------------
+
 --------------------------------------------------------------------------------
 -- CORE FUNCTIONS
 --------------------------------------------------------------------------------
@@ -92,19 +110,62 @@ local function TweenCharacterTo(targetCFrame)
     local root = char and char:FindFirstChild("HumanoidRootPart")
     if not root then return end
     
-    local dist = (targetCFrame.Position - root.Position).Magnitude
-    local time = dist / TWEEN_SPEED
+    if CurrentTweenTrack then
+        task.cancel(CurrentTweenTrack)
+        CurrentTweenTrack = nil
+    end
     
-    local tweenInfo = TweenInfo.new(time, Enum.EasingStyle.Linear, Enum.EasingDirection.Out)
-    local tween = TweenService:Create(root, tweenInfo, {CFrame = targetCFrame})
+    local function PlayTweenStep(goalCFrame)
+        local dist = (goalCFrame.Position - root.Position).Magnitude
+        if dist < 1 then return end
+        
+        local time = dist / TWEEN_SPEED
+        local tweenInfo = TweenInfo.new(time, Enum.EasingStyle.Linear, Enum.EasingDirection.Out)
+        local tween = TweenService:Create(root, tweenInfo, {CFrame = goalCFrame})
+        
+        tween:Play()
+        tween.Completed:Wait()
+    end
     
-    IsTweening = true
-    tween:Play()
-    tween.Completed:Connect(function() IsTweening = false end)
+    CurrentTweenTrack = task.spawn(function()
+        IsTweening = true
+        
+        local isBlocked = false
+        
+        if GoblinCavePart then
+            local origin = root.Position
+            local direction = targetCFrame.Position - origin
+            local rayParams = RaycastParams.new()
+            rayParams.FilterType = Enum.RaycastFilterType.Include
+            rayParams.FilterDescendantsInstances = {GoblinCavePart}
+
+            local hit = Workspace:Raycast(origin, direction, rayParams)
+            if hit then isBlocked = true end
+        end
+
+        if isBlocked then
+            local avoidHeight = 200 
+            local currentPos = root.Position
+            local targetPos = targetCFrame.Position
+            
+            local highPointStart = CFrame.new(currentPos.X, currentPos.Y + avoidHeight, currentPos.Z)
+            PlayTweenStep(highPointStart)
+            
+            local destY = targetPos.Y + avoidHeight
+            local midPoint = CFrame.new(targetPos.X, math.max(currentPos.Y + avoidHeight, destY), targetPos.Z)
+            PlayTweenStep(midPoint)
+            
+            PlayTweenStep(targetCFrame)
+        else
+            PlayTweenStep(targetCFrame)
+        end
+        
+        IsTweening = false
+        CurrentTweenTrack = nil
+    end)
 end
 
 local function InitializeNoclip()
-    -- Set Camera to Invisicam
     LocalPlayer.DevCameraOcclusionMode = Enum.DevCameraOcclusionMode.Invisicam
 
     RunService.Stepped:Connect(function()
@@ -240,11 +301,8 @@ local function InitializeAutoMine()
                     local closeMob = FindCloseMob(15)
                     if closeMob then
                         ActiveTargets.Combat = closeMob
-                        -- We pause mining but don't clear the target so we can resume later
                     else
-                        if not Config.AutoAttack then
-                            ActiveTargets.Combat = nil
-                        end
+                        if not Config.AutoAttack then ActiveTargets.Combat = nil end
                     end
                 end
 
@@ -285,6 +343,7 @@ local function InitializeAutoMine()
         end
     end)
 
+    -- Mining movement + Spinning Loop
     RunService.Heartbeat:Connect(function(dt)
         local char = LocalPlayer.Character
         local root = char and char:FindFirstChild("HumanoidRootPart")
@@ -295,18 +354,30 @@ local function InitializeAutoMine()
             root.AssemblyAngularVelocity = Vector3.zero
             
             local targetPos = ActiveTargets.Mining.Position
-            -- Position 5 studs down
+            -- Position 5 studs down (or relative to ore hitbox)
             local miningPos = targetPos - Vector3.new(0, 5, 0)
-            local targetCFrame = CFrame.lookAt(miningPos, targetPos)
             
             local currentPos = root.Position
             local dist = (miningPos - currentPos).Magnitude
+
+            -- Determine Rotation
+            local targetRotation
+            if Config.SpinMining then
+                -- Spin rapidly (Time based for smoothness)
+                targetRotation = CFrame.Angles(0, tick() * 10, 0)
+            else
+                -- Look at Ore
+                targetRotation = CFrame.lookAt(currentPos, targetPos).Rotation
+            end
+            
             if dist > 1 then
                 local moveDir = (miningPos - currentPos).Unit
                 local moveDist = math.min(dist, TWEEN_SPEED * dt)
-                root.CFrame = CFrame.new(currentPos + moveDir * moveDist) * targetCFrame.Rotation
+                -- Apply movement + calculated rotation
+                root.CFrame = CFrame.new(currentPos + moveDir * moveDist) * targetRotation
             else
-                root.CFrame = targetCFrame
+                -- At the ore
+                root.CFrame = CFrame.new(miningPos) * targetRotation
             end
         end
     end)
@@ -372,16 +443,12 @@ local function InitializeCombat()
     task.spawn(function()
         while true do
             task.wait(0.05) 
-            
             local char = LocalPlayer.Character
             local root = char and char:FindFirstChild("HumanoidRootPart")
-            
             local shouldRunCombat = (Config.AutoAttack or (Config.FightCloseMobs and ActiveTargets.Combat))
             
             if shouldRunCombat and Remotes.ToolActivated and root and char:FindFirstChild("Humanoid") then
-                
                 local weapon = char:FindFirstChildWhichIsA("Tool")
-
                 local targetValid = false
                 if ActiveTargets.Combat and ActiveTargets.Combat.Parent and ActiveTargets.Combat:FindFirstChild("Humanoid") then
                     if ActiveTargets.Combat.Humanoid.Health > 0 then
@@ -404,9 +471,7 @@ local function InitializeCombat()
                 if not ActiveTargets.Combat and Config.AutoAttack then 
                     ActiveTargets.Combat = FindTarget(500) 
                 end
-                
                 local target = ActiveTargets.Combat
-
                 if weapon and target and char.Humanoid.Health > 0 and target.Parent then
                     local shouldBlock = false
                     if Config.AutoParry then
@@ -414,7 +479,6 @@ local function InitializeCombat()
                         local attacking = status and status:FindFirstChild("Attacking")
                         if attacking and attacking.Value == true then shouldBlock = true end
                     end
-
                     if shouldBlock then
                         if not isBlocking then Remotes.StartBlock:InvokeServer(); isBlocking = true end
                     else
@@ -439,30 +503,23 @@ local function InitializeCombat()
     RunService.Heartbeat:Connect(function(dt)
         local char = LocalPlayer.Character
         local root = char and char:FindFirstChild("HumanoidRootPart")
-        
         local shouldMove = (Config.AutoAttack or Config.FightCloseMobs)
         
         if shouldMove and ActiveTargets.Combat and ActiveTargets.Combat.Parent and root then
             local targetRoot = ActiveTargets.Combat:FindFirstChild("HumanoidRootPart")
             if targetRoot then
                 local targetPos = targetRoot.Position
-                -- Offset: +10 studs
                 local idealPos = targetPos + Vector3.new(0, 10, 0)
                 local targetCFrame = CFrame.lookAt(idealPos, targetPos)
-                
                 local currentPos = root.Position
                 local distToTarget = (idealPos - currentPos).Magnitude
-                
                 local activeLock = true
-                if distToTarget < 5 then
-                    activeLock = CombatLocked
-                end
+                if distToTarget < 5 then activeLock = CombatLocked end
 
                 if activeLock then
                     root.Anchored = false
                     root.AssemblyLinearVelocity = Vector3.zero
                     root.AssemblyAngularVelocity = Vector3.zero
-                    
                     if distToTarget > 1 then
                         local moveDir = (idealPos - currentPos).Unit
                         local moveDist = math.min(distToTarget, TWEEN_SPEED * dt)
@@ -527,10 +584,7 @@ local function InitializeForgeAndSell()
                             local qty = tonumber(qtyStr:match("%d+")) or 0
                             
                             name = name:match("^%s*(.-)%s*$")
-                            
-                            if name ~= "" and qty > 0 then
-                                inventory[name] = qty
-                            end
+                            if name ~= "" and qty > 0 then inventory[name] = qty end
                         end
                     end
                 end
@@ -544,18 +598,15 @@ local function InitializeForgeAndSell()
             if notifyFunc then notifyFunc("Error", "Sell Remote (RunCommand) not found!") end
             return 
         end
-
         local inventory = GetInventoryData()
         local basket = {}
         local hasItems = false
-
         for itemName, qty in pairs(inventory) do
             if Config.SellWhitelist[itemName] then
                 basket[itemName] = qty 
                 hasItems = true
             end
         end
-
         if hasItems then
             SellRemote:InvokeServer("SellConfirm", { Basket = basket })
             if notifyFunc then notifyFunc("Sold", "Attempted to sell items.") end
@@ -569,9 +620,7 @@ local function InitializeForgeAndSell()
     task.spawn(function()
         while true do
             task.wait(3)
-            if Config.AutoSell then
-                SellSelectedItems(nil)
-            end
+            if Config.AutoSell then SellSelectedItems(nil) end
         end
     end)
 end
@@ -696,6 +745,15 @@ FarmingTab:CreateToggle({
     Flag = "AutoMine",
     Callback = function(Value)
         Config.AutoMine = Value
+    end,
+})
+
+FarmingTab:CreateToggle({
+    Name = "Spin While Mining",
+    CurrentValue = false,
+    Flag = "SpinMining",
+    Callback = function(Value)
+        Config.SpinMining = Value
     end,
 })
 
@@ -856,14 +914,11 @@ local SeenSellItems = {}
 
 task.spawn(function()
     while true do
-        -- Use Workspace Rocks (All Items) + Inventory to ensure all possibilities are shown
         local allRocks = ScriptAPI.GetRockTypes and ScriptAPI.GetRockTypes() or {}
         local inventory = ScriptAPI.GetAvailableOres and ScriptAPI.GetAvailableOres() or {}
-        
         local masterList = {}
         for _, v in ipairs(allRocks) do masterList[v] = true end
         for k, _ in pairs(inventory) do masterList[k] = true end
-        
         local sortedItems = {}
         for k in pairs(masterList) do table.insert(sortedItems, k) end
         table.sort(sortedItems)
@@ -871,7 +926,6 @@ task.spawn(function()
         for _, oreName in ipairs(sortedItems) do
             if not SeenSellItems[oreName] then
                 SeenSellItems[oreName] = true
-                
                 SellingTab:CreateToggle({
                     Name = "Sell: " .. oreName,
                     CurrentValue = false,
@@ -899,7 +953,6 @@ ForgeTab:CreateButton({
             local finalOres = {}
             local totalQty = 0
             local typeCount = 0
-            
             for name, qty in pairs(OreSelections) do
                 if qty > 0 then
                     finalOres[name] = qty
@@ -907,7 +960,6 @@ ForgeTab:CreateButton({
                     typeCount = typeCount + 1
                 end
             end
-            
             if totalQty < 3 then
                 Rayfield:Notify({Title = "Error", Content = "Select at least 3 ores.", Duration = 3})
                 return
@@ -916,7 +968,6 @@ ForgeTab:CreateButton({
                 Rayfield:Notify({Title = "Error", Content = "Max 4 ore types.", Duration = 3})
                 return
             end
-            
             ScriptAPI.InstantForge(finalOres, Config.ForgeItemType, function(t, m)
                 Rayfield:Notify({Title = t, Content = m, Duration = 5})
             end)
@@ -944,12 +995,8 @@ task.spawn(function()
         for k in pairs(availOres) do table.insert(sortedOres, k) end
         table.sort(sortedOres)
         
-        local currentOresInUI = {}
-
         for _, oreName in ipairs(sortedOres) do
-            currentOresInUI[oreName] = true
             local maxQty = availOres[oreName]
-            
             if not OreSliders[oreName] then
                  OreSliders[oreName] = ForgeTab:CreateSlider({
                     Name = oreName,
@@ -977,7 +1024,6 @@ TeleportTab:CreateSection("Proximity Locations")
 local function RefreshLocations()
     local proxFolder = Workspace:FindFirstChild("Proximity")
     if not proxFolder then return end
-
     local children = proxFolder:GetChildren()
     table.sort(children, function(a, b) return a.Name < b.Name end)
 
