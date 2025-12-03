@@ -364,7 +364,7 @@ local function InitializeAutoMine()
             local targetRotation
             if Config.SpinMining then
                 -- Spin rapidly (Time based for smoothness)
-                targetRotation = CFrame.Angles(0, tick() * 10, 0)
+                targetRotation = CFrame.Angles(0, tick() * 4, 0)
             else
                 -- Look at Ore
                 targetRotation = CFrame.lookAt(currentPos, targetPos).Rotation
@@ -1113,3 +1113,4 @@ MiscTab:CreateButton({
 
 print("[The Forge] Script Loaded Successfully!")
 Rayfield:LoadConfiguration()
+
