@@ -1,6 +1,6 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- THE FORGE: COMPLETE EDITION (Inventory Mode)
--- Features: Dynamic Inventory UI + Saved Settings + Per-Item Quantity
+-- THE FORGE: COMPLETE EDITION (Updated)
+-- Features: Priority Mine + Spawner Fix + V2 Combat + Shop Fix + Auto Hammer + Melt/Pour + Lava Spam
 -- ═══════════════════════════════════════════════════════════════════════════
 
 local Players = game:GetService("Players")
@@ -37,6 +37,7 @@ local Config = {
     -- LAVA
     LavaDistanceSafe = 8,
     LavaDistanceUnsafe = 6,
+    SpamLava = false, -- New Config for Lava Spam
     
     -- COMBAT
     AutoFarmV2 = false,
@@ -46,29 +47,29 @@ local Config = {
     FightCloseMobs = false,
     AttackTargets = {},
     
-    -- FORGE (Dynamic)
+    -- FORGE
     AutoHammer = false, 
     ForgeItemType = "Weapon",
-    ForgeSettings = {}, -- Saved via Flags
+    SelectedOre = "Iron",
+    ForgeQty = 1,
     
     -- MISC
     AutoRun = false,
     InfiniteFly = false,
     ClickTeleport = false,
     AutoSell = false,
-    SellSettings = {} -- Saved via Flags
+    SelectedSellItems = {} 
 }
 
--- List used ONLY for the Ore Filter dropdown (Mining), not for the UI generation
-local AllOresReference = {
-    "Stone", "Sand Stone", "Copper", "Iron", "Gold", "Silver", "Tin", "Platinum",
+local AvailableOresList = {
     "Cobalt", "Titanium", "Lapis Lazuli", "Volcanic Rock", "Quartz", "Amethyst", 
     "Boneite", "Dark Boneite", "Topaz", "Diamond", "Sapphire", "Magenta Crystal", 
     "Crimson Crystal", "Blue Crystal", "Orange Crystal", "Green Crystal", "Obsidian", 
     "Emerald", "Ruby", "Rivalite", "Uranium", "Mythril", "Eye Ore", "Fireite", 
-    "Magmaite", "Lightite", "Rainbow Crystal", "Demonite", "Darkryte", "Arcane Crystal"
+    "Magmaite", "Lightite", "Rainbow Crystal", "Demonite", "Darkryte", "Arcane Crystal",
+    "Stone", "Sand Stone", "Copper", "Iron", "Gold", "Silver", "Tin", "Platinum"
 }
-table.sort(AllOresReference)
+table.sort(AvailableOresList)
 
 local ScriptAPI = {}
 local ActiveTargets = { Mining = nil, Combat = nil }
@@ -79,6 +80,7 @@ local IsRespawning = false
 
 -- Ignored Rocks Cache
 local IgnoredRocks = {}
+
 local LavaState = { IsSafe = true, LastHealth = 100, DamageTime = 0 }
 
 -- Services
@@ -207,12 +209,20 @@ local function FindCloseMob(range)
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- AUTO MINE
+-- AUTO MINE (REMODELED TO COMBAT V2 METHOD)
 -- ═══════════════════════════════════════════════════════════════════════════
 local function InitializeAutoMine()
     local CurrentMiningTarget = nil
     local MiningStartTime = 0 
-    local OCCUPIED_CHECK_DISTANCE = 15
+    
+    -- New Variables for Combat-Style TP
+    local MINE_START_POS = Vector3.new(160.94, 112.08, 110.3) -- Using V2 Safe Spot
+    local IsMiningRunning = false
+    local CanMineTeleport = false
+    local MineStartupTime = 0
+    
+    -- Spam Lava Logic Variables
+    local LavaSpamState = { IsUp = true, LastSwitch = 0 }
 
     local function GetOresInRock(rockModel)
         local oresFound = {}
@@ -382,6 +392,21 @@ local function InitializeAutoMine()
         return closestPriority or closestNormal
     end
 
+    -- Loop for Reset Logic (Combat V2 Style)
+    task.spawn(function()
+        while true do
+            if Config.AutoMine then
+                pcall(function() 
+                    if Remotes.Reset then Remotes.Reset:InvokeServer() end
+                end)
+                task.wait(4) 
+            else
+                task.wait(1)
+            end
+        end
+    end)
+
+    -- Loop for Target Finding & Attack
     task.spawn(function()
         while true do
             task.wait(0.1)
@@ -457,9 +482,11 @@ local function InitializeAutoMine()
                         if ActiveTargets.Mining then MiningStartTime = tick() end
                     end
 
+                    -- Clicker logic (Only if close enough)
                     if pickaxe and ActiveTargets.Mining and ActiveTargets.Mining.Parent then
                          local dist = (root.Position - ActiveTargets.Mining.Position).Magnitude
-                         if dist <= 25 then Remotes.ToolActivated:InvokeServer("Pickaxe") end
+                         -- Allow slightly larger distance for click due to lag/tp
+                         if dist <= 30 then Remotes.ToolActivated:InvokeServer("Pickaxe") end
                     end
                 end
             else
@@ -468,34 +495,80 @@ local function InitializeAutoMine()
         end
     end)
 
+    -- New Heartbeat (Combat TP Method + Spam Logic)
     RunService.Heartbeat:Connect(function(dt)
+        if not Config.AutoMine then 
+            IsMiningRunning = false
+            CanMineTeleport = false
+            return 
+        end
+
+        if not IsMiningRunning then
+            IsMiningRunning = true
+            MineStartupTime = tick()
+            CanMineTeleport = false
+            
+            pcall(function() if Remotes.Reset then Remotes.Reset:InvokeServer() end end)
+        end
+
         local char = LocalPlayer.Character
         local root = char and char:FindFirstChild("HumanoidRootPart")
+        if not root then return end
         
-        if Config.AutoMine and ActiveTargets.Mining and not ActiveTargets.Combat and ActiveTargets.Mining.Parent and root then
+        -- Delay Sequence: Safe Spot -> Mine
+        if not CanMineTeleport then
+            if tick() - MineStartupTime >= 5.5 then
+                CanMineTeleport = true
+            else
+                root.CFrame = CFrame.new(MINE_START_POS)
+                root.AssemblyLinearVelocity = Vector3.zero
+                root.AssemblyAngularVelocity = Vector3.zero
+                return
+            end
+        end
+
+        if ActiveTargets.Mining and not ActiveTargets.Combat and ActiveTargets.Mining.Parent then
             root.Anchored = false
             root.AssemblyLinearVelocity = Vector3.zero
             root.AssemblyAngularVelocity = Vector3.zero
             
             local targetPos = ActiveTargets.Mining.Position
-            local verticalOffset = LavaState.IsSafe and Config.LavaDistanceSafe or Config.LavaDistanceUnsafe
+            local verticalOffset
+            
+            -- Spam Lava Logic (Up/Down)
+            if Config.SpamLava then
+                if tick() - LavaSpamState.LastSwitch >= 0.5 then
+                    LavaSpamState.IsUp = not LavaSpamState.IsUp
+                    LavaSpamState.LastSwitch = tick()
+                end
+                
+                -- IsUp = Higher Position (Unsafe Val is usually higher, e.g. -6 vs -8)
+                -- Using LavaDistanceSafe (8) and LavaDistanceUnsafe (6)
+                if LavaSpamState.IsUp then
+                    verticalOffset = Config.LavaDistanceUnsafe -- Closer/Higher
+                else
+                    verticalOffset = Config.LavaDistanceSafe -- Lower
+                end
+            else
+                -- Standard Logic
+                verticalOffset = LavaState.IsSafe and Config.LavaDistanceSafe or Config.LavaDistanceUnsafe
+            end
             
             local idealPos = targetPos - Vector3.new(0, verticalOffset, 0)
-            local currentPos = root.Position
             
-            local dist = (idealPos - currentPos).Magnitude
-            local moveDir = (idealPos - currentPos).Unit
-            local moveDist = math.min(dist, TWEEN_SPEED * dt)
-            
-            local nextCFramePosition = currentPos + (moveDir * moveDist)
-
+            -- Instant TP (Combat Style)
             local rotation
             if Config.SpinMining then
                 rotation = CFrame.Angles(0, tick() * 15, 0) 
             else
-                rotation = CFrame.lookAt(currentPos, targetPos).Rotation
+                rotation = CFrame.lookAt(idealPos, targetPos).Rotation
             end
-            root.CFrame = CFrame.new(nextCFramePosition) * rotation
+            
+            root.CFrame = CFrame.new(idealPos) * rotation
+        elseif not ActiveTargets.Mining then
+            -- If no target, go to safe spot
+            root.CFrame = CFrame.new(MINE_START_POS)
+            root.AssemblyLinearVelocity = Vector3.zero
         end
     end)
 end
@@ -785,37 +858,22 @@ local function InitializeForgeAndSell()
         end
     end
 
-    local function DetermineActiveForgeOre()
-        for oreName, settings in pairs(Config.ForgeSettings) do
-            if settings.Enabled then
-                return oreName, settings.Qty
-            end
-        end
-        return nil, 0
-    end
-
     local function ManualMeltAndPour(notifyFunc)
         local forgeModel = Workspace:WaitForChild("Proximity", 5) and Workspace.Proximity:WaitForChild("Forge", 5)
         if not Remotes.StartForge or not forgeModel then return end
         
-        local activeOre, activeQty = DetermineActiveForgeOre()
-        if not activeOre then
-            if notifyFunc then notifyFunc("Error", "No Ore selected in Forge Tab!", 3) end
-            return
-        end
-
         local av = GetInventoryData()
-        local use = math.min(activeQty, av[activeOre] or 0)
+        local use = math.min(Config.ForgeQty, av[Config.SelectedOre] or 0)
         
         if use <= 0 then
-            if notifyFunc then notifyFunc("Error", "Not enough " .. activeOre .. "! Check inventory.", 3) end
+            if notifyFunc then notifyFunc("Error", "Not enough ores! Check inventory.", 3) end
             return
         end
         
-        local ores = {[activeOre] = use}
+        local ores = {[Config.SelectedOre] = use}
         local itemType = Config.ForgeItemType
         
-        if notifyFunc then notifyFunc("Forge", "Melt & Pour: " .. activeOre .. " ("..use..")", 3) end
+        if notifyFunc then notifyFunc("Forge", "Starting Melt & Pour...", 3) end
         
         Remotes.Forge:InvokeServer(forgeModel); task.wait(0.2)
         Remotes.StartForge:InvokeServer(forgeModel)
@@ -833,28 +891,12 @@ local function InitializeForgeAndSell()
         if notifyFunc then notifyFunc("Forge", "Ready to Hammer!", 3) end
     end
 
-    local function GenuineForge(notifyFunc)
+    local function GenuineForge(ores, itemType, notifyFunc)
         local forgeModel = Workspace:WaitForChild("Proximity", 5) and Workspace.Proximity:WaitForChild("Forge", 5)
         if not Remotes.StartForge or not forgeModel then return end
+        if not itemType then itemType = "Weapon" end
         
-        local activeOre, activeQty = DetermineActiveForgeOre()
-        if not activeOre then
-            if notifyFunc then notifyFunc("Error", "No Ore enabled in Forge settings!", 3) end
-            return
-        end
-
-        local av = GetInventoryData()
-        local use = math.min(activeQty, av[activeOre] or 0)
-        
-        if use <= 0 then
-            if notifyFunc then notifyFunc("Error", "Not enough "..activeOre.."", 3) end
-            return
-        end
-
-        local itemType = Config.ForgeItemType
-        local ores = {[activeOre] = use}
-
-        if notifyFunc then notifyFunc("Forge", "Forging " .. use .. " " .. activeOre) end
+        if notifyFunc then notifyFunc("Forge", "Starting Forge...") end
         Remotes.Forge:InvokeServer(forgeModel); task.wait(0.2)
         Remotes.StartForge:InvokeServer(forgeModel)
         TweenCharacterTo(forgeModel.Smelter.CFrame); task.wait(1)
@@ -915,22 +957,19 @@ local function InitializeForgeAndSell()
     ScriptAPI.TalkToSeller = TalkToSeller
     ScriptAPI.GetPlayerMoney = GetPlayerMoney
 
-    -- AUTO SELL LOOP (Uses Flags)
+    -- UPDATED AUTO SELL LOOP
     task.spawn(function()
         while true do
             task.wait(2)
             if Config.AutoSell and SellRemote then
                 local inventory = GetInventoryData()
                 local basket = {}
-                
-                -- Check against Config.SellSettings which is populated by Flags
-                for itemName, isEnabled in pairs(Config.SellSettings) do
+                for itemName, isEnabled in pairs(Config.SelectedSellItems) do
                     if isEnabled then
                         local qty = inventory[itemName] or 0
                         if qty > 0 then basket[itemName] = qty end
                     end
                 end
-                
                 if next(basket) then
                     SellRemote:InvokeServer("SellConfirm", {Basket = basket})
                 end
@@ -1037,7 +1076,7 @@ InitializeAutoFarmV2()
 -- RAYFIELD UI
 -- ═══════════════════════════════════════════════════════════════════════════
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
-local Window = Rayfield:CreateWindow({Name = "The Forge (Inventory Mode)", LoadingTitle = "", LoadingSubtitle = "", ConfigurationSaving = {Enabled = true, FolderName = "TheForgeScriptV3", FileName = "Config"}, KeySystem = false, Theme = "Ocean"})
+local Window = Rayfield:CreateWindow({Name = "The Forge (Complete + Melt)", LoadingTitle = "", LoadingSubtitle = "", ConfigurationSaving = {Enabled = true, FolderName = "TheForgeScript", FileName = "Config"}, KeySystem = false, Theme = "Ocean"})
 
 local FarmingTab = Window:CreateTab("Farming", 4483362458)
 local CombatTab = Window:CreateTab("Combat", 4483362458)
@@ -1077,10 +1116,11 @@ end)
 
 FarmingTab:CreateSection("Ore Filter (Optional)")
 FarmingTab:CreateLabel("Enable this only if you want to scan contents.")
+FarmingTab:CreateLabel("Leave OFF for standard mining.")
 FarmingTab:CreateToggle({Name = "Enable Ore Filter", CurrentValue = false, Flag = "OreFilter", Callback = function(v) Config.OreFilterEnabled = v end})
 FarmingTab:CreateDropdown({
     Name = "Select Wanted Drops",
-    Options = AllOresReference, -- Uses reference list because you might want to filter for things you don't have yet
+    Options = AvailableOresList,
     CurrentOption = {},
     MultipleOptions = true,
     Flag = "SelectedOres",
@@ -1090,6 +1130,8 @@ FarmingTab:CreateDropdown({
 })
 
 FarmingTab:CreateSection("Smart Lava Logic")
+FarmingTab:CreateToggle({Name = "Spam Lava (Up/Down 0.5s)", CurrentValue = false, Flag = "SpamLava", Callback = function(v) Config.SpamLava = v end})
+FarmingTab:CreateLabel("Detection: Health Drop")
 FarmingTab:CreateSlider({Name = "Safe Distance", Range = {6, 15}, Increment = 1, CurrentValue = 8, Flag = "SafeDist", Callback = function(v) Config.LavaDistanceSafe = v end})
 FarmingTab:CreateSlider({Name = "Lava Distance", Range = {4, 10}, Increment = 1, CurrentValue = 6, Flag = "LavaDist", Callback = function(v) Config.LavaDistanceUnsafe = v end})
 
@@ -1109,7 +1151,14 @@ end)
 
 -- COMBAT SECTION
 CombatTab:CreateSection("Auto Farm V2")
-CombatTab:CreateToggle({Name = "Auto Farm V2 (might kick)", CurrentValue = false, Flag = "AutoFarmV2", Callback = function(v) Config.AutoFarmV2 = v end})
+CombatTab:CreateToggle({
+    Name = "Auto Farm V2 (might kick)", 
+    CurrentValue = false, 
+    Flag = "AutoFarmV2", 
+    Callback = function(v) 
+        Config.AutoFarmV2 = v 
+    end
+})
 CombatTab:CreateToggle({Name = "Auto Fix Shop (On V2 Start)", CurrentValue = false, Flag = "AutoFixShop", Callback = function(v) Config.AutoFixShop = v end})
 
 CombatTab:CreateSection("Standard Combat")
@@ -1132,30 +1181,24 @@ task.spawn(function()
     end
 end)
 
--- SELLING SECTION (DYNAMIC INVENTORY SCAN + SAVING)
+-- SELLING SECTION (DYNAMIC SELECTION)
 SellingTab:CreateSection("Auto Sell Controls")
 SellingTab:CreateToggle({Name = "Enable Auto Sell", CurrentValue = false, Flag = "AutoSell", Callback = function(v) Config.AutoSell = v end})
 SellingTab:CreateButton({Name = "Talk to Buyer (Fixes Shop)", Callback = function() if ScriptAPI.TalkToSeller and ScriptAPI.TalkToSeller() then Rayfield:Notify({Title = "Success", Content = "Shop opened!", Duration = 3}) end end})
 
-SellingTab:CreateSection("Select Items to Sell")
-SellingTab:CreateLabel("Scanning Inventory... (Only shows what you have)")
-
+SellingTab:CreateSection("Item Selection (Detected in Inventory)")
 local SellToggleCache = {}
 task.spawn(function()
     while true do
-        local inv = ScriptAPI.GetAvailableOres()
-        for itemName, qty in pairs(inv) do
+        local inv = GetInventoryData()
+        for itemName, _ in pairs(inv) do
             if not SellToggleCache[itemName] then
                 SellToggleCache[itemName] = true
-                -- We create the toggle dynamically. 
-                -- Because we use a consistent "Flag", Rayfield will restore the saved setting 
-                -- as soon as this toggle is created, even if it wasn't there when the script started.
                 SellingTab:CreateToggle({
                     Name = "Sell: " .. itemName,
-                    CurrentValue = false, 
-                    Flag = "Sell_" .. itemName, 
+                    CurrentValue = Config.SelectedSellItems[itemName] or false,
                     Callback = function(state)
-                        Config.SellSettings[itemName] = state
+                        Config.SelectedSellItems[itemName] = state
                     end
                 })
             end
@@ -1167,45 +1210,24 @@ end)
 local MoneyLabel = SellingTab:CreateParagraph({Title = "Status", Content = "Checking..."})
 task.spawn(function() while true do task.wait(2); if ScriptAPI.GetPlayerMoney then MoneyLabel:Set({Title = "Status", Content = "Cash: "..ScriptAPI.GetPlayerMoney()}) end end end)
 
--- FORGE SECTION (DYNAMIC SCAN + PER ITEM SLIDERS)
+-- FORGE SECTION (DYNAMIC SELECTION)
 ForgeTab:CreateSection("Manual Forge Assist")
 ForgeTab:CreateToggle({Name = "Auto Hammer Minigame (Manual)", CurrentValue = false, Flag = "AutoHammer", Callback = function(v) Config.AutoHammer = v end})
 ForgeTab:CreateButton({Name = "Start Melt & Pour (Use Settings Below)", Callback = function() if ScriptAPI.ManualMeltAndPour then ScriptAPI.ManualMeltAndPour(function(t, m) Rayfield:Notify({Title = t, Content = m, Duration = 3}) end) end end})
 
-ForgeTab:CreateSection("Global Settings")
-ForgeTab:CreateDropdown({Name = "Item Type", Options = {"Weapon", "Armor"}, CurrentOption = {"Weapon"}, Flag = "ForgeItemType", Callback = function(o) Config.ForgeItemType = o[1] end})
-ForgeTab:CreateButton({Name = "Start Genuine Forge", Callback = function() if ScriptAPI.GenuineForge then ScriptAPI.GenuineForge(function(t, m) Rayfield:Notify({Title = t, Content = m, Duration = 5}) end) end end})
-
-ForgeTab:CreateSection("Inventory Forge Settings")
-ForgeTab:CreateLabel("Scanning Inventory... (Enable Ore + Set Qty)")
-
+ForgeTab:CreateSection("Item Selection (Detected Ores)")
 local ForgeToggleCache = {}
 task.spawn(function()
     while true do
-        local inv = ScriptAPI.GetAvailableOres()
-        for itemName, qty in pairs(inv) do
+        local inv = GetInventoryData()
+        for itemName, _ in pairs(inv) do
             if not ForgeToggleCache[itemName] then
                 ForgeToggleCache[itemName] = true
-                
-                if not Config.ForgeSettings[itemName] then Config.ForgeSettings[itemName] = {Enabled = false, Qty = 1} end
-
                 ForgeTab:CreateToggle({
                     Name = "Use: " .. itemName,
-                    CurrentValue = false,
-                    Flag = "ForgeUse_" .. itemName,
+                    CurrentValue = (Config.SelectedOre == itemName),
                     Callback = function(state)
-                        Config.ForgeSettings[itemName].Enabled = state
-                    end
-                })
-                
-                ForgeTab:CreateSlider({
-                    Name = "Qty: " .. itemName,
-                    Range = {1, 50},
-                    Increment = 1,
-                    CurrentValue = 1,
-                    Flag = "ForgeQty_" .. itemName,
-                    Callback = function(val)
-                        Config.ForgeSettings[itemName].Qty = val
+                        if state then Config.SelectedOre = itemName end
                     end
                 })
             end
@@ -1213,6 +1235,13 @@ task.spawn(function()
         task.wait(3)
     end
 end)
+
+ForgeTab:CreateSection("Genuine Auto Forge")
+local OreStatusLabel = ForgeTab:CreateParagraph({Title = "Status", Content = "Loading Ores..."})
+ForgeTab:CreateSlider({Name = "Quantity to Use", Range = {1, 100}, Increment = 1, Suffix = "Ores", CurrentValue = 1, Flag = "ForgeQty", Callback = function(v) Config.ForgeQty = v end})
+ForgeTab:CreateDropdown({Name = "Item Type", Options = {"Weapon", "Armor"}, CurrentOption = {"Weapon"}, Flag = "ForgeItemType", Callback = function(o) Config.ForgeItemType = o[1] end})
+task.spawn(function() while true do local av = GetInventoryData(); OreStatusLabel:Set({Title = "Inventory", Content = "Selected: "..Config.SelectedOre.."\nOwned: "..(av[Config.SelectedOre] or 0)}); task.wait(1) end end)
+ForgeTab:CreateButton({Name = "Start Genuine Forge", Callback = function() if ScriptAPI.GenuineForge then local av = GetInventoryData(); local use = math.min(Config.ForgeQty, av[Config.SelectedOre] or 0); ScriptAPI.GenuineForge({[Config.SelectedOre]=use}, Config.ForgeItemType, function(t, m) Rayfield:Notify({Title = t, Content = m, Duration = 5}) end) end end})
 
 -- TELEPORT SECTION
 TeleportTab:CreateSection("Proximity Locations")
@@ -1237,5 +1266,5 @@ MiscTab:CreateToggle({Name = "Infinite Fly", CurrentValue = false, Flag = "Infin
 MiscTab:CreateToggle({Name = "Click TP (Ctrl+Click)", CurrentValue = false, Flag = "ClickTP", Callback = function(v) Config.ClickTeleport = v end})
 MiscTab:CreateButton({Name = "Redeem All Codes", Callback = function() RedeemAllCodes(); Rayfield:Notify({Title = "Codes", Content = "Redeeming...", Duration = 3}) end})
 
-print("[The Forge] Inventory Mode Loaded!")
+print("[The Forge] Complete Script Loaded!")
 Rayfield:LoadConfiguration()
