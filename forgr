@@ -1,8 +1,3 @@
--- ═══════════════════════════════════════════════════════════════════════════
--- THE FORGE: COMPLETE EDITION (Updated)
--- Features: Multi-Priority Mine + Spawner Fix + V2 Combat + Shop Fix + Auto Hammer + Melt/Pour + Lava Spam
--- ═══════════════════════════════════════════════════════════════════════════
-
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -16,10 +11,6 @@ local GuiService = game:GetService("GuiService")
 local LocalPlayer = Players.LocalPlayer
 
 _G.TheForgeLoaded = true 
-
--- ═══════════════════════════════════════════════════════════════════════════
--- CONFIGURATION
--- ═══════════════════════════════════════════════════════════════════════════
 
 local Config = {
     -- MINING
@@ -1357,3 +1348,4 @@ MiscTab:CreateButton({Name = "Redeem All Codes", Callback = function() RedeemAll
 
 print("[The Forge] Complete Script Loaded!")
 Rayfield:LoadConfiguration()
+
