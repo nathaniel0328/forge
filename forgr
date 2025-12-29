@@ -58,7 +58,7 @@ local AvailableOresList = {
     "Crimson Crystal", "Blue Crystal", "Orange Crystal", "Green Crystal", "Obsidian", 
     "Emerald", "Ruby", "Rivalite", "Uranium", "Mythril", "Eye Ore", "Fireite", 
     "Magmaite", "Lightite", "Rainbow Crystal", "Demonite", "Darkryte", "Arcane Crystal",
-    "Stone", "Sand Stone", "Copper", "Iron", "Gold", "Silver", "Tin", "Platinum"
+    "Stone", "Sand Stone", "Copper", "Iron", "Gold", "Silver", "Tin", "Platinum", "Suryafal", "Etherealite", "Galestor", "Malachite", "Cryptex", "Crimsonite", "Aqujade", "Iceite", "Voidstar", "Gargantuan", "Heavenite"
 }
 table.sort(AvailableOresList)
 
@@ -1348,4 +1348,3 @@ MiscTab:CreateButton({Name = "Redeem All Codes", Callback = function() RedeemAll
 
 print("[The Forge] Complete Script Loaded!")
 Rayfield:LoadConfiguration()
-
