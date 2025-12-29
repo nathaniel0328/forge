@@ -567,7 +567,7 @@ local function InitializeAutoMine()
             
             -- Spam Lava Logic (Up/Down)
             if Config.SpamLava then
-                if tick() - LavaSpamState.LastSwitch >= 0.5 then
+                if tick() - LavaSpamState.LastSwitch >= 0.25 then
                     LavaSpamState.IsUp = not LavaSpamState.IsUp
                     LavaSpamState.LastSwitch = tick()
                 end
