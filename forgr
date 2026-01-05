@@ -1,7 +1,7 @@
 -- ═══════════════════════════════════════════════════════════════════════════
 -- THE FORGE: COMPLETE EDITION (Updated)
--- Features: Multi-Priority Mine + Spawner Fix + V2 Combat + Shop Fix + Auto Hammer + Melt/Pour + Lava Spam
--- Update: Dynamic Greedy Cey Teleport
+-- Features: Multi-Priority Mine + Multi-Priority Combat + Spawner Fix + V2 + Shop Fix + Auto Hammer + Melt/Pour + Lava Spam
+-- Update: Combat Priority List Added
 -- ═══════════════════════════════════════════════════════════════════════════
 
 local Players = game:GetService("Players")
@@ -27,7 +27,7 @@ local Config = {
     AutoMine = false,
     SpinMining = false,
     MineTargets = {}, 
-    PriorityList = {}, -- New Ordered List for Priority
+    PriorityList = {}, -- Mining Priority
     BreakNonPriority = false, 
     OreFilterEnabled = false,
     SelectedOres = {}, 
@@ -47,6 +47,7 @@ local Config = {
     AutoParry = false,
     FightCloseMobs = false,
     AttackTargets = {},
+    CombatPriorityList = {}, -- New Combat Priority
     
     -- FORGE
     AutoHammer = false, 
@@ -630,6 +631,50 @@ local function InitializeAutoFarmV2()
     local MobAttackStartTime = 0
     local IsV2Above = true
     
+    local function GetV2Target()
+        local char = LocalPlayer.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if not root then return nil end
+        
+        local living = Workspace:FindFirstChild("Living")
+        if not living then return nil end
+        
+        local bestMob = nil
+        local bestPriority = 9999 -- Lower is better (1, 2, 3...)
+        local bestDist = 9999
+        
+        for _, mob in ipairs(living:GetChildren()) do
+            if mob:FindFirstChild("Humanoid") and mob.Humanoid.Health > 0 and mob:FindFirstChild("HumanoidRootPart") and not Players:GetPlayerFromCharacter(mob) then
+                local cleanName = mob.Name:gsub("%d+$", "")
+                local pIndex = 9999
+                
+                -- Check Priority List
+                for i, pName in ipairs(Config.CombatPriorityList) do
+                    if cleanName == pName then pIndex = i; break end
+                end
+                
+                -- Check Toggles (Fallback priority)
+                if pIndex == 9999 and Config.AttackTargets[cleanName] then
+                    pIndex = 1000 -- Give toggles a "low" priority
+                end
+                
+                if pIndex < 9999 then
+                    local dist = (mob.HumanoidRootPart.Position - root.Position).Magnitude
+                    if pIndex < bestPriority then
+                        bestPriority = pIndex
+                        bestMob = mob
+                        bestDist = dist
+                    elseif pIndex == bestPriority and dist < bestDist then
+                        -- Same priority tier? Pick closest
+                        bestMob = mob
+                        bestDist = dist
+                    end
+                end
+            end
+        end
+        return bestMob
+    end
+
     task.spawn(function()
         while true do
             if Config.AutoFarmV2 then
@@ -692,19 +737,7 @@ local function InitializeAutoFarmV2()
             end
         end
 
-        local target = nil
-        local living = Workspace:FindFirstChild("Living")
-        if living then
-            for _, mob in ipairs(living:GetChildren()) do
-                if mob:FindFirstChild("Humanoid") and mob.Humanoid.Health > 0 and mob:FindFirstChild("HumanoidRootPart") and not Players:GetPlayerFromCharacter(mob) then
-                     local cleanName = mob.Name:gsub("%d+$", "")
-                     if Config.AttackTargets[cleanName] then
-                         target = mob
-                         break
-                     end
-                end
-            end
-        end
+        local target = GetV2Target()
 
         if target then
             local tRoot = target.HumanoidRootPart
@@ -793,19 +826,45 @@ local function InitializeCombat()
 
         if Config.AutoAttack then
             local living = Workspace:FindFirstChild("Living")
-            local bestTarget, bestDist = nil, 2000 
-            if living then
-                for _, mob in ipairs(living:GetChildren()) do
-                    if IsMobValid(mob) and not Players:GetPlayerFromCharacter(mob) then
-                        local cleanName = mob.Name:gsub("%d+$", "")
-                        if Config.AttackTargets and Config.AttackTargets[cleanName] then
-                            local dist = (mob.HumanoidRootPart.Position - root.Position).Magnitude
-                            if dist < bestDist then bestTarget = mob; bestDist = dist end
-                        end
+            if not living then return nil end
+            
+            local bestMob = nil
+            local bestPriority = 9999
+            local bestDist = 2000 -- Max Range
+            
+            for _, mob in ipairs(living:GetChildren()) do
+                if IsMobValid(mob) and not Players:GetPlayerFromCharacter(mob) then
+                    local cleanName = mob.Name:gsub("%d+$", "")
+                    local pIndex = 9999
+                    
+                    -- Check Priority List
+                    for i, pName in ipairs(Config.CombatPriorityList) do
+                        if cleanName == pName then pIndex = i; break end
+                    end
+                    
+                    -- Check Toggles
+                    if pIndex == 9999 and Config.AttackTargets[cleanName] then
+                        pIndex = 1000
+                    end
+                    
+                    if pIndex < 9999 then
+                         local dist = (mob.HumanoidRootPart.Position - root.Position).Magnitude
+                         if dist < bestDist then
+                             -- Strict Priority check
+                             if pIndex < bestPriority then
+                                 bestPriority = pIndex
+                                 bestMob = mob
+                                 bestDist = dist
+                             elseif pIndex == bestPriority then
+                                 -- Same priority, stick with closest
+                                 bestMob = mob
+                                 bestDist = dist
+                             end
+                         end
                     end
                 end
             end
-            return bestTarget
+            return bestMob
         end
         return nil
     end
@@ -1268,15 +1327,54 @@ CombatTab:CreateToggle({Name = "Auto Attack", CurrentValue = false, Flag = "Auto
 CombatTab:CreateToggle({Name = "Auto Block", CurrentValue = false, Flag = "AutoParry", Callback = function(v) Config.AutoParry = v end})
 
 CombatTab:CreateSection("Targets")
+
+-- COMBAT PRIORITY UI
+local CombatPriorityLabel = CombatTab:CreateParagraph({Title = "Current Priority Queue", Content = "None selected"})
+local CombatPriorityDropdown
+CombatPriorityDropdown = CombatTab:CreateDropdown({
+    Name = "Priority Mobs (Order Matters!)", 
+    Options = {"Loading..."}, 
+    CurrentOption = {},
+    MultipleOptions = true,
+    Flag = "CombatPriorityMulti",
+    Callback = function(selected)
+        -- Logic: Sync Selection with Config.CombatPriorityList order
+        for i = #Config.CombatPriorityList, 1, -1 do
+            local item = Config.CombatPriorityList[i]
+            local found = false
+            for _, s in ipairs(selected) do if s == item then found = true; break end end
+            if not found then table.remove(Config.CombatPriorityList, i) end
+        end
+        for _, s in ipairs(selected) do
+            local found = false
+            for _, item in ipairs(Config.CombatPriorityList) do if item == s then found = true; break end end
+            if not found then table.insert(Config.CombatPriorityList, s) end
+        end
+        
+        if #Config.CombatPriorityList == 0 then
+            CombatPriorityLabel:Set({Title = "Current Priority Queue", Content = "None selected"})
+        else
+            local txt = ""
+            for i, p in ipairs(Config.CombatPriorityList) do txt = txt .. i .. ". " .. p .. "  >  " end
+            CombatPriorityLabel:Set({Title = "Current Priority Queue", Content = txt:sub(1, -6)})
+        end
+    end
+})
+
 local SeenMobs = {}
 task.spawn(function()
     while true do
         if ScriptAPI.GetMobTypes then
-            for _, m in ipairs(ScriptAPI.GetMobTypes()) do
+            local newMobs, needsRefresh = ScriptAPI.GetMobTypes(), false
+            for _, m in ipairs(newMobs) do
                 if not SeenMobs[m] then
-                    SeenMobs[m] = true
+                    SeenMobs[m] = true; needsRefresh = true
                     CombatTab:CreateToggle({Name = "Farm: "..m, CurrentValue = false, Flag = "Mob_"..m, Callback = function(v) Config.AttackTargets[m] = v end})
                 end
+            end
+            if needsRefresh then
+                local opts = {}; for k in pairs(SeenMobs) do table.insert(opts, k) end; table.sort(opts)
+                CombatPriorityDropdown:Refresh(opts)
             end
         end
         task.wait(5)
